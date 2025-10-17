@@ -7,15 +7,30 @@ import pandas as pd
 import unicodedata
 from datetime import datetime
 
-# -------------------------------
+# -----------------------------------------------------
+# Esquema normalizado de salida
+# -----------------------------------------------------
+COLUMNAS = [
+    "archivo_pdf",        # nombre del archivo
+    "empresa",            # Metrogas / Enel / Aguas Andinas
+    "nro_documento",      # número de boleta o factura
+    "total_a_pagar",      # monto total
+    "id_cliente",         # número o código de cliente
+    "fecha_emision",      # fecha de emisión
+    "fecha_vencimiento",  # fecha de vencimiento
+    "consumo_periodo",    # consumo del período (m3, kWh, etc.)
+    "estado"              # OK / PARCIAL / FALLA_EXTRACCION / 
+]
+
+# -----------------------------------------------------
 # Utilidades
-# -------------------------------
-def normalizar_nombre(s: str) -> str:
+# -----------------------------------------------------
+def _normalize_filename(s: str) -> str:
     s = s.strip().lower()
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     return s
 
-def obtener_pdfs_en_directorio(directorio: Path):
+def _listar_pdfs(directorio: Path):
     return sorted([p for p in Path(directorio).glob("*.pdf")])
 
 def _leer_texto_pdf(path_pdf: Path) -> str:
@@ -24,179 +39,151 @@ def _leer_texto_pdf(path_pdf: Path) -> str:
         for page in pdf.pages:
             try:
                 texto += page.extract_text() or ""
-            except Exception as e:
-                # Continuamos aunque una página falle
+            except Exception:
                 texto += ""
     return texto
 
-def _limpiar_montos(x: str | None):
-    if not x: 
+def _limpiar_monto(x: str | None):
+    if not x:
         return None
-    # Normaliza ".000" y "1.234.567" a entero
     x = x.replace(".", "").replace(",", ".").strip()
     try:
-        # Muchos montos en CLP son enteros
         return int(float(x))
-    except:
+    except Exception:
         return x
 
-# -------------------------------
-# Extractores por proveedor
-# (basados en la lógica de tus notebooks)
-# -------------------------------
-def extraer_datos_metrogas(path_pdf: Path) -> dict:
-    texto = _leer_texto_pdf(path_pdf)
+def _estado_por_campos(dic, claves_minimas):
+    if all(dic.get(k) for k in claves_minimas):
+        return "OK"
+    return "PARCIAL"
 
-    out = {
-        "proveedor": "Metrogas",
-        "archivo": path_pdf.name,
-        "rut_empresa": None,
-        "numero_cuenta": None,
-        "numero_boleta": None,
-        "fecha_emision": None,
-        "periodo_facturado": None,
-        "consumo_total_m3": None,
-        "iva": None,
-        "total_a_pagar": None,
-        "vencimiento": None,
-        "estado": "OK",
-    }
-
+# -----------------------------------------------------
+# Extractores (mapean a COLUMNAS)
+# -----------------------------------------------------
+def extraer_metrogas(path_pdf: Path) -> dict:
+    out = {k: None for k in COLUMNAS}
+    out["archivo_pdf"] = path_pdf.name
+    out["empresa"] = "Metrogas"
     try:
-        # patrones robustos (aproximación fiel a los originales)
-        rut = re.search(r"R\.U\.T\.[:\s]*([\d\.]+-[\dkK])", texto, re.IGNORECASE)
-        num_cta = re.search(r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{7,12})", texto, re.IGNORECASE)
-        if not num_cta:
-            num_cta = re.search(r"n[uú]mero\s+de\s+cuent[ao].*?([\d\-kK]{7,12})", texto, re.IGNORECASE|re.DOTALL)
-        n_boleta = re.search(r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
-        f_emision = re.search(r"FECHA\s+EMISI[ÓO]N[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
-        per_fact = re.search(r"Considera\s+movimientos\s+hasta\s*(\d{2}[-/]\d{2}[-/]\d{4})", texto, re.IGNORECASE)
-        consumo = re.search(r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3", texto, re.IGNORECASE)
-        iva = re.search(r"\bIVA\b.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
-        total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
-        venc = re.search(r"VENCIMIENTO\s*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        texto = _leer_texto_pdf(path_pdf)
 
-        if rut: out["rut_empresa"] = rut.group(1)
-        if num_cta: out["numero_cuenta"] = num_cta.group(1)
-        if n_boleta: out["numero_boleta"] = n_boleta.group(1)
-        if f_emision: out["fecha_emision"] = f_emision.group(1)
-        if per_fact: out["periodo_facturado"] = per_fact.group(1)
-        if consumo: out["consumo_total_m3"] = consumo.group(1).replace(",", ".")
-        if iva: out["iva"] = _limpiar_montos(iva.group(1))
-        if total: out["total_a_pagar"] = _limpiar_montos(total.group(1))
-        if venc: out["vencimiento"] = venc.group(1)
+        # id_cliente (nro cuenta / cliente)
+        m_id = re.search(r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{7,12})", texto, re.IGNORECASE)
+        if not m_id:
+            m_id = re.search(r"n[uú]mero\s+de\s+cuent[ao].*?([\d\-kK]{7,12})", texto, re.IGNORECASE|re.DOTALL)
+        out["id_cliente"] = m_id.group(1) if m_id else None
 
-        claves = ["numero_cuenta","rut_empresa","numero_boleta","fecha_emision","total_a_pagar","vencimiento"]
-        if not all(out.get(k) for k in claves):
-            out["estado"] = "ERROR: Datos incompletos"
-    except Exception as e:
-        out["estado"] = f"ERROR: {e}"
+        # nro_documento
+        m_ndoc = re.search(r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
+        out["nro_documento"] = m_ndoc.group(1) if m_ndoc else None
 
+        # fechas
+        m_emision = re.search(r"FECHA\s+EMISI[ÓO]N[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        out["fecha_emision"] = m_emision.group(1) if m_emision else None
+
+        m_venc = re.search(r"VENCIMIENTO\s*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        out["fecha_vencimiento"] = m_venc.group(1) if m_venc else None
+
+        # consumo (m3)
+        m_cons = re.search(r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3", texto, re.IGNORECASE)
+        out["consumo_periodo"] = (
+            m_cons.group(1).replace(",", ".") + " m3" if m_cons else None
+        )
+
+        # total a pagar
+        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
+        out["total_a_pagar"] = _limpiar_monto(m_total.group(1)) if m_total else None
+
+        out["estado"] = _estado_por_campos(out, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"])
+    except Exception:
+        out["estado"] = "FALLA_EXTRACCION"
     return out
 
 
-def extraer_datos_enel(path_pdf: Path) -> dict:
-    texto = _leer_texto_pdf(path_pdf)
-
-    out = {
-        "proveedor": "Enel",
-        "archivo": path_pdf.name,
-        "rut_empresa": None,
-        "numero_cuenta": None,
-        "numero_boleta": None,
-        "fecha_emision": None,
-        "monto_periodo": None,
-        "consumo_total": None,
-        "total_a_pagar": None,
-        "fecha_vencimiento": None,
-        "estado": "OK",
-    }
-
+def extraer_enel(path_pdf: Path) -> dict:
+    out = {k: None for k in COLUMNAS}
+    out["archivo_pdf"] = path_pdf.name
+    out["empresa"] = "Enel"
     try:
-        rut = re.search(r"R\.U\.T\.\s*[:\-]?\s*([\d\.]+-[\dkK])", texto, re.IGNORECASE)
-        num_cte = re.search(r"(?:N°|Nº|Número)\s+Cliente\s*[:\-]?\s*(\d{7,12})", texto, re.IGNORECASE)
-        n_boleta = re.search(r"Boleta\s+Electr[oó]nica\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
-        f_emision = re.search(r"Fecha\s+de\s+Emisi[oó]n\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
-        monto_periodo = re.search(r"Monto\s+del\s+per[ií]odo\s*[:\-]?\s*\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE)
-        consumo = re.search(r"Consumo\s+total\s+del\s+mes\s*=?\s*(\d+\s*kWh?)", texto, re.IGNORECASE)
-        total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
-        f_venc = re.search(r"Fecha\s+de\s+vencimi(?:ento|miento)\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
+        texto = _leer_texto_pdf(path_pdf)
 
-        if rut: out["rut_empresa"] = rut.group(1)
-        if num_cte: out["numero_cuenta"] = num_cte.group(1)
-        if n_boleta: out["numero_boleta"] = n_boleta.group(1)
-        if f_emision: out["fecha_emision"] = f_emision.group(1)
-        if monto_periodo: out["monto_periodo"] = _limpiar_montos(monto_periodo.group(1))
-        if consumo: out["consumo_total"] = consumo.group(1)
-        if total: out["total_a_pagar"] = _limpiar_montos(total.group(1))
-        if f_venc: out["fecha_vencimiento"] = f_venc.group(1)
+        # id_cliente
+        m_id = re.search(r"(?:N°|Nº|Número)\s+Cliente\s*[:\-]?\s*(\d{7,12})", texto, re.IGNORECASE)
+        out["id_cliente"] = m_id.group(1) if m_id else None
 
-        claves = ["numero_cuenta","rut_empresa","numero_boleta","fecha_emision","total_a_pagar","fecha_vencimiento"]
-        if not all(out.get(k) for k in claves):
-            out["estado"] = "ERROR: Datos incompletos"
-    except Exception as e:
-        out["estado"] = f"ERROR: {e}"
+        # nro_documento
+        m_ndoc = re.search(r"Boleta\s+Electr[oó]nica\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
+        out["nro_documento"] = m_ndoc.group(1) if m_ndoc else None
 
+        # fechas
+        m_emision = re.search(r"Fecha\s+de\s+Emisi[oó]n\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
+        out["fecha_emision"] = m_emision.group(1) if m_emision else None
+
+        m_venc = re.search(r"Fecha\s+de\s+vencimi(?:ento|miento)\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
+        out["fecha_vencimiento"] = m_venc.group(1) if m_venc else None
+
+        # consumo (kWh)
+        m_cons = re.search(r"Consumo\s+total\s+del\s+mes\s*=?\s*(\d+)\s*(kWh?)", texto, re.IGNORECASE)
+        if m_cons:
+            out["consumo_periodo"] = f"{m_cons.group(1)} {m_cons.group(2)}"
+
+        # total a pagar
+        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
+        out["total_a_pagar"] = _limpiar_monto(m_total.group(1)) if m_total else None
+
+        out["estado"] = _estado_por_campos(out, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"])
+    except Exception:
+        out["estado"] = "FALLA_EXTRACCION"
     return out
 
 
-def extraer_datos_aguas_andinas(path_pdf: Path) -> dict:
-    texto = _leer_texto_pdf(path_pdf)
-
-    out = {
-        "proveedor": "Aguas Andinas",
-        "archivo": path_pdf.name,
-        "rut_empresa": None,
-        "numero_cuenta": None,
-        "numero_boleta": None,
-        "fecha_emision": None,
-        "periodo_facturado": None,
-        "consumo_total_m3": None,
-        "iva": None,
-        "total_a_pagar": None,
-        "vencimiento": None,
-        "estado": "OK",
-    }
-
+def extraer_aguas_andinas(path_pdf: Path) -> dict:
+    out = {k: None for k in COLUMNAS}
+    out["archivo_pdf"] = path_pdf.name
+    out["empresa"] = "Aguas Andinas"
     try:
-        rut = re.search(r"R\.U\.T\.[:\s]*([\d\.]+-[\dkK])", texto, re.IGNORECASE)
-        num_cta = re.search(r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{7,12})", texto, re.IGNORECASE)
-        n_boleta = re.search(r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
-        f_emision = re.search(r"FECHA\s+EMISI[ÓO]N[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
-        per_fact = re.search(r"Considera\s+movimientos\s+hasta\s*(\d{2}[-/]\d{2}[-/]\d{4})", texto, re.IGNORECASE)
-        consumo = re.search(r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3", texto, re.IGNORECASE)
-        iva = re.search(r"\bIVA\b.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
-        total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
-        venc = re.search(r"VENCIMIENTO\s*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        texto = _leer_texto_pdf(path_pdf)
 
-        if rut: out["rut_empresa"] = rut.group(1)
-        if num_cta: out["numero_cuenta"] = num_cta.group(1)
-        if n_boleta: out["numero_boleta"] = n_boleta.group(1)
-        if f_emision: out["fecha_emision"] = f_emision.group(1)
-        if per_fact: out["periodo_facturado"] = per_fact.group(1)
-        if consumo: out["consumo_total_m3"] = consumo.group(1).replace(",", ".")
-        if iva: out["iva"] = _limpiar_montos(iva.group(1))
-        if total: out["total_a_pagar"] = _limpiar_montos(total.group(1))
-        if venc: out["vencimiento"] = venc.group(1)
+        # id_cliente
+        m_id = re.search(r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{7,12})", texto, re.IGNORECASE)
+        out["id_cliente"] = m_id.group(1) if m_id else None
 
-        claves = ["numero_cuenta","rut_empresa","numero_boleta","fecha_emision","total_a_pagar","vencimiento"]
-        if not all(out.get(k) for k in claves):
-            out["estado"] = "ERROR: Datos incompletos"
-    except Exception as e:
-        out["estado"] = f"ERROR: {e}"
+        # nro_documento
+        m_ndoc = re.search(r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
+        out["nro_documento"] = m_ndoc.group(1) if m_ndoc else None
 
+        # fechas
+        m_emision = re.search(r"FECHA\s+EMISI[ÓO]N[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        out["fecha_emision"] = m_emision.group(1) if m_emision else None
+
+        m_venc = re.search(r"VENCIMIENTO\s*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
+        out["fecha_vencimiento"] = m_venc.group(1) if m_venc else None
+
+        # consumo (m3)
+        m_cons = re.search(r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3", texto, re.IGNORECASE)
+        out["consumo_periodo"] = (
+            m_cons.group(1).replace(",", ".") + " m3" if m_cons else None
+        )
+
+        # total a pagar
+        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
+        out["total_a_pagar"] = _limpiar_monto(m_total.group(1)) if m_total else None
+
+        out["estado"] = _estado_por_campos(out, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"])
+    except Exception:
+        out["estado"] = "FALLA_EXTRACCION"
     return out
 
-# -------------------------------
-# Clasificador por nombre de archivo y proceso batch
-# -------------------------------
+# -----------------------------------------------------
+# Clasificador por nombre y proceso batch
+# -----------------------------------------------------
 def _tipo_por_nombre(path_pdf: Path) -> str | None:
-    nombre = normalizar_nombre(path_pdf.stem)
-    if "metrogas" in nombre or ("metro" in nombre and "gas" in nombre):
+    n = _normalize_filename(path_pdf.stem)
+    if "metrogas" in n or ("metro" in n and "gas" in n):
         return "metrogas"
-    if "enel" in nombre:
+    if "enel" in n:
         return "enel"
-    if ("aguas" in nombre) and ("andinas" in nombre):
+    if "aguas" in n and "andinas" in n:
         return "aguas_andinas"
     return None
 
@@ -205,25 +192,32 @@ def procesar_boletas(carpeta_boletas: Path, carpeta_salida: Path | None = None) 
     carpeta_salida = Path(carpeta_salida) if carpeta_salida else carpeta_boletas
 
     resultados = []
-    for pdf in obtener_pdfs_en_directorio(carpeta_boletas):
+    for pdf in _listar_pdfs(carpeta_boletas):
         tipo = _tipo_por_nombre(pdf)
         if tipo == "metrogas":
-            resultados.append(extraer_datos_metrogas(pdf))
+            resultados.append(extraer_metrogas(pdf))
         elif tipo == "enel":
-            resultados.append(extraer_datos_enel(pdf))
+            resultados.append(extraer_enel(pdf))
         elif tipo == "aguas_andinas":
-            resultados.append(extraer_datos_aguas_andinas(pdf))
+            resultados.append(extraer_aguas_andinas(pdf))
         else:
             resultados.append({
-                "proveedor": "DESCONOCIDO",
-                "archivo": pdf.name,
-                "estado": "Tipo desconocido por nombre de archivo",
+                "archivo_pdf": pdf.name,
+                "empresa": None,
+                "nro_documento": None,
+                "total_a_pagar": None,
+                "id_cliente": None,
+                "fecha_emision": None,
+                "fecha_vencimiento": None,
+                "consumo_periodo": None,
+                "estado": "PARCIAL"
             })
 
     if not resultados:
         raise RuntimeError("No se encontraron PDFs en la carpeta.")
 
-    df = pd.DataFrame(resultados)
+    df = pd.DataFrame(resultados)[COLUMNAS]
+
     carpeta_salida.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_csv = carpeta_salida / f"boletas_extraidas_{ts}.csv"
@@ -232,6 +226,5 @@ def procesar_boletas(carpeta_boletas: Path, carpeta_salida: Path | None = None) 
     try:
         df.to_excel(out_xlsx, index=False)
     except Exception:
-        # openpyxl no siempre está disponible
         pass
     return out_csv
