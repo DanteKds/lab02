@@ -1,7 +1,5 @@
-
 from pathlib import Path
 import re
-import os
 import pdfplumber
 import pandas as pd
 import unicodedata
@@ -19,7 +17,7 @@ COLUMNAS = [
     "fecha_emision",
     "fecha_vencimiento",
     "consumo_periodo",
-    "estado",
+    "estado"
 ]
 
 # -----------------------------------------------------
@@ -57,35 +55,13 @@ def _estado_por_campos(dic, claves_minimas):
         return "OK"
     return "PARCIAL"
 
-# --- recolector de montos en una cadena (enteros) ---
-def _montos_en_texto(s: str):
-    """
-    Devuelve lista de montos encontrados como enteros a partir de patrones tipo
-    $ 1.234.567, 1.234.567 o 1234567[,..]. Ignora símbolos y espacios.
-    """
-    candidatos = []
-    patron = r"\$?\s*([0-9]{1,3}(?:[.\s][0-9]{3})+|[0-9]+)(?:,[0-9]{1,2})?"
-    for m in re.finditer(patron, s):
-        bruto = m.group(1)
-        limpio = (
-            bruto.replace(".", "")
-                 .replace(" ", "")
-                 .replace(" ", "")
-        )
-        try:
-            val = int(float(limpio.replace(",", ".")))
-            candidatos.append(val)
-        except Exception:
-            pass
-    return candidatos
-
 # -----------------------------------------------------
 # Ayudantes (Aguas Andinas)
 # -----------------------------------------------------
 def _preprocesar_texto(s: str) -> str:
     s = unicodedata.normalize("NFKC", s)
-    s = s.replace(" ", " ")
-    s = s.replace("m³", "m3")  # m³ -> m3
+    s = s.replace("\u00A0", " ")
+    s = s.replace("m³", "m3")
     s = re.sub(r"\s+", " ", s)
     return s
 
@@ -101,7 +77,7 @@ def _ventana_derecha(patron_label: str, s: str, ancho: int = 180) -> str | None:
     if not m:
         return None
     inicio = m.end()
-    return s[inicio : inicio + ancho]
+    return s[inicio:inicio+ancho]
 
 # -----------------------------------------------------
 # Extractores
@@ -114,27 +90,19 @@ def extraer_metrogas(path_pdf: Path) -> dict:
         texto = _leer_texto_pdf(path_pdf)
         m_id = re.search(r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{7,12})", texto, re.IGNORECASE)
         if not m_id:
-            m_id = re.search(r"n[uú]mero\s+de\s+cuent[ao].*?([\d\-kK]{7,12})", texto, re.IGNORECASE | re.DOTALL)
+            m_id = re.search(r"n[uú]mero\s+de\s+cuent[ao].*?([\d\-kK]{7,12})", texto, re.IGNORECASE|re.DOTALL)
         salida["id_cliente"] = m_id.group(1) if m_id else None
-
         m_ndoc = re.search(r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
         salida["nro_documento"] = m_ndoc.group(1) if m_ndoc else None
-
         m_emision = re.search(r"FECHA\s+EMISI[ÓO]N[:\s]*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
         salida["fecha_emision"] = m_emision.group(1) if m_emision else None
-
         m_venc = re.search(r"VENCIMIENTO\s*(\d{2}[-/]\w{3}[-/]\d{4})", texto, re.IGNORECASE)
         salida["fecha_vencimiento"] = m_venc.group(1) if m_venc else None
-
         m_cons = re.search(r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3", texto, re.IGNORECASE)
-        salida["consumo_periodo"] = (m_cons.group(1).replace(",", ".") + " m3") if m_cons else None
-
-        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE | re.DOTALL)
+        salida["consumo_periodo"] = (m_cons.group(1).replace(",", ".") + " m3" if m_cons else None)
+        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
         salida["total_a_pagar"] = _limpiar_monto(m_total.group(1)) if m_total else None
-
-        salida["estado"] = _estado_por_campos(
-            salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"]
-        )
+        salida["estado"] = _estado_por_campos(salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"])
     except Exception:
         salida["estado"] = "FALLA_EXTRACCION"
     return salida
@@ -147,26 +115,18 @@ def extraer_enel(path_pdf: Path) -> dict:
         texto = _leer_texto_pdf(path_pdf)
         m_id = re.search(r"(?:N°|Nº|Número)\s+Cliente\s*[:\-]?\s*(\d{7,12})", texto, re.IGNORECASE)
         salida["id_cliente"] = m_id.group(1) if m_id else None
-
         m_ndoc = re.search(r"Boleta\s+Electr[oó]nica\s*N[º°]?\s*(\d+)", texto, re.IGNORECASE)
         salida["nro_documento"] = m_ndoc.group(1) if m_ndoc else None
-
         m_emision = re.search(r"Fecha\s+de\s+Emisi[oó]n\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
         salida["fecha_emision"] = m_emision.group(1) if m_emision else None
-
         m_venc = re.search(r"Fecha\s+de\s+vencimi(?:ento|miento)\s*[:\-]?\s*(\d{1,2}\s+\w{3}\s+\d{4})", texto, re.IGNORECASE)
         salida["fecha_vencimiento"] = m_venc.group(1) if m_venc else None
-
         m_cons = re.search(r"Consumo\s+total\s+del\s+mes\s*=?\s*(\d+)\s*(kWh?)", texto, re.IGNORECASE)
         if m_cons:
             salida["consumo_periodo"] = f"{m_cons.group(1)} {m_cons.group(2)}"
-
-        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE | re.DOTALL)
+        m_total = re.search(r"Total\s+a\s+pagar.*?\$?\s*([\d\.]{1,3}(?:\.[\d]{3})*)", texto, re.IGNORECASE|re.DOTALL)
         salida["total_a_pagar"] = _limpiar_monto(m_total.group(1)) if m_total else None
-
-        salida["estado"] = _estado_por_campos(
-            salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"]
-        )
+        salida["estado"] = _estado_por_campos(salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"])
     except Exception:
         salida["estado"] = "FALLA_EXTRACCION"
     return salida
@@ -176,13 +136,9 @@ def extraer_aguas_andinas(path_pdf: Path) -> dict:
     salida["archivo_pdf"] = path_pdf.name
     salida["empresa"] = "Aguas Andinas"
     try:
-        # Texto lineal (para regex normales)
         texto_raw = _leer_texto_pdf(path_pdf)
         texto = _preprocesar_texto(texto_raw)
-        # Texto compacto (para patrones de palabras pegadas)
-        texto_compacto = re.sub(r"\s+", "", texto)
 
-        # --- patrones en cascada (lineal) ---
         patrones_id = [
             r"(?:Nro|N[º°]|Número)\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{6,})",
             r"(?:Nro|N[º°]|Número)\s+cliente\s*[:\-]?\s*([\d\-kK]{6,})",
@@ -191,12 +147,14 @@ def extraer_aguas_andinas(path_pdf: Path) -> dict:
             r"Su\s+n[uú]mero\s+de\s+Cuenta\s+es\s*[:\-]?\s*([\d\-kK]{6,})",
             r"Nro\s+de\s+cuenta\s*[:\-]?\s*([\d\-kK]{6,})",
         ]
+
         patrones_ndoc = [
             r"BOLETA\s+ELECTR[ÓO]NICA\s*N[º°]?\s*(\d+)",
             r"Folio\s*[:\-]?\s*(\d{5,})",
             r"(?:Documento|Doc\.?)\s*(?:N[º°]|N°|#)?\s*[:\-]?\s*(\d{5,})",
-            r"N[º°]\s*(\d{5,})",
+            r"\bN[º°]\s*(\d{5,})",
         ]
+
         patrones_f_emision = [
             r"FECHA\s+EMISI[ÓO]N[:\s]*([0-3]?\d[-/]\w{3}[-/]\d{4})",
             r"FECHA\s+DE\s+EMISI[ÓO]N[:\s]*([0-3]?\d[-/][01]?\d[-/]\d{4})",
@@ -207,11 +165,13 @@ def extraer_aguas_andinas(path_pdf: Path) -> dict:
             r"Vencimiento[:\s]*([0-3]?\d[-/]\w{3}[-/]\d{4})",
             r"FECHA\s+DE\s+VENCIM(?:IENTO|MIENTO)\s*[:\-]?\s*([0-3]?\d\s+\w+\s+\d{4})",
         ]
+
         patrones_total = [
-            r"Total\s*a\s*pagar(?:.{0,80})?\$?\s*([\d\.\s]{1,18})",
-            r"TOTAL\s*A\s*PAGAR(?:.{0,80})?\$?\s*([\d\.\s]{1,18})",
-            r"TOTAL\s*A\s*PAGAR\s*[^\d$]{0,40}\$?\s*([\d\.\s]{1,18})",
+            r"Total\s*a\s*pagar(?:.{0,60})?\$?\s*([\d\.\s]{1,18})",
+            r"TOTAL\s*A\s*PAGAR(?:.{0,60})?\$?\s*([\d\.\s]{1,18})",
+            r"TOTAL\s*A\s*PAGAR\s*[^\d$]{0,20}\$?\s*([\d\.\s]{1,18})",
         ]
+
         patrones_consumo = [
             r"CONSUMO\s+TOTAL\s*([\d\.,]+)\s*m3",
             r"CONSUMO\s+DEL\s+PER[IÍ]ODO\s*([\d\.,]+)\s*m3",
@@ -219,175 +179,40 @@ def extraer_aguas_andinas(path_pdf: Path) -> dict:
             r"DIFERENCIA\s+DE\s+LECTURAS\s*([\d\.,]+)\s*m3",
         ]
 
-        # id_cliente (lineal)
         if salida["id_cliente"] is None:
             salida["id_cliente"] = _primer_patron(patrones_id, texto)
         if salida["id_cliente"] is None:
             w = _ventana_derecha(r"(Su\s+n[uú]mero\s+de\s+Cuenta\s+es|Nro\s+de\s+cuenta)", texto) or ""
             salida["id_cliente"] = _primer_patron(patrones_id, w)
 
-        # nro_documento (lineal)
         if salida["nro_documento"] is None:
             salida["nro_documento"] = _primer_patron(patrones_ndoc, texto)
 
-        # fechas (lineal)
         if salida["fecha_emision"] is None:
             salida["fecha_emision"] = _primer_patron(patrones_f_emision, texto)
+
         if salida["fecha_vencimiento"] is None:
             salida["fecha_vencimiento"] = _primer_patron(patrones_f_venc, texto)
 
-        # total_a_pagar (lineal + ventana)
         if salida["total_a_pagar"] is None:
-            w = _ventana_derecha(r"(?:VENCIMIENTO\s+)?TOTAL\s*A\s*PAGAR", texto) or texto
+            w = _ventana_derecha(r"TOTAL\s*A\s*PAGAR", texto) or texto
             v = _primer_patron(patrones_total, w)
             if v:
                 v = re.sub(r"\s", "", v)
                 salida["total_a_pagar"] = _limpiar_monto(v)
 
-        # consumo (lineal)
         if salida["consumo_periodo"] is None:
             c = _primer_patron(patrones_consumo, texto)
             if c:
                 c_norm = c.replace(".", "").replace(",", ".")
                 salida["consumo_periodo"] = f"{c_norm} m3"
 
-        # --- FALLBACKS sobre texto compacto (palabras pegadas) ---
-        if salida["total_a_pagar"] is None:
-            v = _primer_patron(
-                [
-                    r"TOTALAPAGAR\s*\$*([\d\.\,]+)",
-                    r"TOTAL\s*A\s*PAGAR\s*\$?\s*([\d\.\,]+)",
-                ],
-                texto_compacto,
-            )
-            if v:
-                v = re.sub(r"\s", "", v)
-                salida["total_a_pagar"] = _limpiar_monto(v)
-
-        if salida["nro_documento"] is None:
-            patrones_nro_doc_compacto = [
-                r"BOLETAELECTR[ÓO]NICA\s*N[º°]?\s*([\d]+)",
-                r"N[º°]\s*([\d]+)",
-            ]
-            salida["nro_documento"] = _primer_patron(patrones_nro_doc_compacto, texto_compacto)
-
-        if salida["id_cliente"] is None:
-            patrones_id_compacto = [
-                r"SunúmerodeCuentaes:([\d\-kK]+)",
-                r"Su\s*númerode\s*Cuenta\s*es:\s*([\d\-kK]+)",
-                r"(?:Nro\s*de\s*cuenta|Número\s*de\s*Cuenta)\s*([\d\-kK]+)",
-            ]
-            salida["id_cliente"] = (
-                _primer_patron([patrones_id_compacto[0]], texto_compacto)
-                or _primer_patron(patrones_id_compacto[1:], texto)
-            )
-
-        if salida["fecha_emision"] is None:
-            patrones_femi_compacto = [
-                r"FECHAEMISI[ÓO]N:(\d{2}-\w{3}-20\d{2})",
-                r"Fechadeemisión:\s*(\d{2}\s*\w{3}\s*\d{4})",
-            ]
-            salida["fecha_emision"] = _primer_patron(patrones_femi_compacto, texto_compacto)
-
-        if salida["fecha_vencimiento"] is None:
-            patrones_fven_compacto = [
-                r"VENCIMIENTO\s*(\d{2}-\w{3}-20\d{2})",
-                r"PAGARHASTA\s*(\d{2}-\w{3}-20\d{2})",
-            ]
-            salida["fecha_vencimiento"] = _primer_patron(patrones_fven_compacto, texto_compacto)
-
-        if salida["consumo_periodo"] is None:
-            patrones_cons_compacto = [
-                r"CONSUMOAGUAPOTABLENOPUNTA\s*([\d\.,]+)",
-                r"CONSUMO\s*AGUA\s*([\d\.,]+)",
-                r"CONSUMOTOTAL\s*\([\s\w\d]+\)\s*=\s*([\d\.,]+)",
-                r"CONSUMOTOTAL\s*([\d\.,]+)",
-            ]
-            c = _primer_patron(patrones_cons_compacto, texto_compacto)
-            if c:
-                c_norm = c.replace(".", "").replace(",", ".")
-                salida["consumo_periodo"] = f"{c_norm} m3"
-
-        # === Fallback específico para nro_documento en tablas y palabras ===
-        if salida["nro_documento"] is None:
-            try:
-                with pdfplumber.open(str(path_pdf)) as pdf_f:
-                    encontrado = None
-                    for pagina in pdf_f.pages:
-                        try:
-                            tablas = pagina.extract_tables() or []
-                        except Exception:
-                            tablas = []
-                        for t in tablas:
-                            for fila in t:
-                                if not fila:
-                                    continue
-                                celdas = [(c or "").strip() for c in fila]
-                                for i, celda in enumerate(celdas):
-                                    if re.search(r"(Folio|Documento|Boleta|N[º°])", celda, re.IGNORECASE):
-                                        if i + 1 < len(celdas):
-                                            val = (celdas[i + 1] or "").strip()
-                                            val_num = re.sub(r"\D", "", val)
-                                            if len(val_num) >= 5:
-                                                encontrado = val_num
-                                                break
-                                if encontrado:
-                                    break
-                            if encontrado:
-                                break
-                    if encontrado:
-                        salida["nro_documento"] = encontrado
-
-                    if salida["nro_documento"] is None:
-                        encontrado2 = None
-                        for pagina in pdf_f.pages:
-                            try:
-                                words = pagina.extract_words(use_text_flow=True, keep_blank_chars=False)
-                            except Exception:
-                                words = []
-                            lineas = {}
-                            for w in words:
-                                y = round(w.get("top", 0), 1)
-                                lineas.setdefault(y, []).append(w)
-                            for y, ws in lineas.items():
-                                ws = sorted(ws, key=lambda z: z.get("x0", 0))
-                                for i, w in enumerate(ws):
-                                    if re.search(r"(Folio|Documento|Boleta|N[º°])", w.get("text", ""), re.IGNORECASE):
-                                        for j in range(i + 1, len(ws)):
-                                            derecha = ws[j]
-                                            dx = derecha.get("x0", 0) - w.get("x1", 0)
-                                            if 0 <= dx <= 150:
-                                                val = derecha.get("text", "").strip()
-                                                val_num = re.sub(r"\D", "", val)
-                                                if len(val_num) >= 5:
-                                                    encontrado2 = val_num
-                                                    break
-                                            else:
-                                                break
-                                if encontrado2:
-                                    break
-                            if encontrado2:
-                                salida["nro_documento"] = encontrado2
-            except Exception:
-                pass
-
-        # --- SELECCIÓN ROBUSTA: mayor monto en ventana TOTAL A PAGAR ---
-        if salida["total_a_pagar"] is None or (isinstance(salida["total_a_pagar"], int) and salida["total_a_pagar"] < 1000):
-            w2 = _ventana_derecha(r"(?:VENCIMIENTO\s+)?TOTAL\s*A\s*PAGAR", texto, ancho=240) or ""
-            candidatos = _montos_en_texto(w2)
-            if candidatos:
-                candidato = max(candidatos)
-                if not isinstance(salida["total_a_pagar"], int) or salida["total_a_pagar"] < 1000:
-                    salida["total_a_pagar"] = candidato
-
-        # Estado + validaciones
-        salida["estado"] = _estado_por_campos(
-            salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"]
-        )
+        salida["estado"] = _estado_por_campos(salida, [
+            "nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"
+        ])
 
         def _es_num_esperado(s):
-            return bool(re.fullmatch(r"[0-9\-–kK]+", s)) if s else False
-
+            return bool(re.fullmatch(r"[0-9\-\–kK]+", s)) if s else False
         if salida["id_cliente"] and len(salida["id_cliente"]) < 6:
             salida["id_cliente"] = None
         if salida["id_cliente"] and not _es_num_esperado(salida["id_cliente"]):
@@ -398,9 +223,9 @@ def extraer_aguas_andinas(path_pdf: Path) -> dict:
             if not (0 < salida["total_a_pagar"] < 1_000_000_000):
                 salida["total_a_pagar"] = None
 
-        salida["estado"] = _estado_por_campos(
-            salida, ["nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"]
-        )
+        salida["estado"] = _estado_por_campos(salida, [
+            "nro_documento", "total_a_pagar", "id_cliente", "fecha_emision", "fecha_vencimiento"
+        ])
 
     except Exception:
         salida["estado"] = "FALLA_EXTRACCION"
@@ -433,19 +258,17 @@ def procesar_boletas(carpeta_boletas: Path, carpeta_salida: Path | None = None) 
         elif tipo == "aguas_andinas":
             resultados.append(extraer_aguas_andinas(pdf))
         else:
-            resultados.append(
-                {
-                    "archivo_pdf": pdf.name,
-                    "empresa": None,
-                    "nro_documento": None,
-                    "total_a_pagar": None,
-                    "id_cliente": None,
-                    "fecha_emision": None,
-                    "fecha_vencimiento": None,
-                    "consumo_periodo": None,
-                    "estado": "PARCIAL",
-                }
-            )
+            resultados.append({
+                "archivo_pdf": pdf.name,
+                "empresa": None,
+                "nro_documento": None,
+                "total_a_pagar": None,
+                "id_cliente": None,
+                "fecha_emision": None,
+                "fecha_vencimiento": None,
+                "consumo_periodo": None,
+                "estado": "PARCIAL"
+            })
 
     if not resultados:
         raise RuntimeError("No se encontraron PDFs en la carpeta.")
